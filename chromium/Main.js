@@ -28,6 +28,8 @@ let state = {
     messageTimer: null,
     seekAmount: 10, // seconds to seek with arrow keys
     backButton: null, // New property to track the back button element
+    progressImageRoot: null,
+    thumbnailPreview: null,
 
     // Subtitle-related state
     subtitleEnabled: true,
@@ -89,6 +91,13 @@ function injectScript(fileName) {
 // Inject the script
 injectScript("netflix-seeker.js");
 
+// Receive progressImageRoot from injected page-context script
+window.addEventListener("netflixThumbnailRootResponse", (e) => {
+    if (e.detail) {
+        state.progressImageRoot = e.detail;
+    }
+});
+
 /**
  * Check if the current URL is a Netflix watch URL
  * @returns {boolean} True if on Netflix watch page
@@ -108,6 +117,18 @@ function timeFormat(timeInSeconds) {
     return `${minutes.toString().padStart(2, "0")}:${seconds
         .toString()
         .padStart(2, "0")}`;
+}
+
+/**
+ * Build the Netflix thumbnail URL for a given timestamp
+ * @param {string} imgRoot - progressImageRoot from Cadmium player
+ * @param {number} timestampMs - Timestamp in milliseconds
+ * @returns {string} URL of the thumbnail JPG
+ */
+function getFrame(imgRoot, timestampMs) {
+    const t = Math.floor(timestampMs / 10000).toString(10);
+    const f = '00000'.slice(t.length) + t;
+    return imgRoot + f + '.jpg';
 }
 
 /**
@@ -677,6 +698,35 @@ input:checked + .subtitle-toggle-slider:before {
     --medium-subtitle-size: 2.7em;
     --large-subtitle-size: 3em;
 }
+
+#netflix-thumbnail-preview {
+    position: fixed;
+    pointer-events: none;
+    z-index: 10002;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    transform: translateX(-50%);
+    bottom: 80px;
+}
+
+#netflix-thumbnail-preview img {
+    width: 160px;
+    height: 90px;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    border-radius: 4px;
+    display: block;
+    background: #000;
+}
+
+#netflix-thumbnail-time {
+    color: white;
+    font-size: 12px;
+    margin-top: 4px;
+    background: rgba(0, 0, 0, 0.75);
+    padding: 2px 8px;
+    border-radius: 3px;
+}
     `;
         document.body.appendChild(style);
     }
@@ -730,6 +780,10 @@ function cleanController() {
         state.backButton.remove();
     }
 
+    if (state.thumbnailPreview) {
+        state.thumbnailPreview.remove();
+    }
+
     // Remove keyboard event listener if exists
     if (state.keyboardListener) {
         document.removeEventListener("keydown", state.keyboardListener);
@@ -771,6 +825,8 @@ function cleanController() {
         subtitleContainer: null,
         subtitleSettingsOpen: false,
         subtitleSettingsPanel: null,
+        progressImageRoot: null,
+        thumbnailPreview: null,
     };
 }
 
@@ -2248,6 +2304,51 @@ function addMediaController() {
         window.dispatchEvent(
             new CustomEvent("netflixSeekTo", { detail: seekTime })
         );
+    });
+
+    // Thumbnail preview on progress bar hover
+    barreContainer.addEventListener("mousemove", (e) => {
+        if (!state.videoElement || !state.videoElement.duration) return;
+
+        const rect = barreContainer.getBoundingClientRect();
+        const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+        const timestampMs = (x / rect.width) * state.videoElement.duration * 1000;
+
+        if (!state.progressImageRoot) {
+            window.dispatchEvent(new CustomEvent("netflixRequestThumbnailRoot"));
+        }
+
+        if (!state.thumbnailPreview) {
+            const preview = document.createElement("div");
+            preview.id = "netflix-thumbnail-preview";
+            const img = document.createElement("img");
+            img.alt = "";
+            const timeLabel = document.createElement("div");
+            timeLabel.id = "netflix-thumbnail-time";
+            preview.appendChild(img);
+            preview.appendChild(timeLabel);
+            document.body.appendChild(preview);
+            state.thumbnailPreview = preview;
+        }
+
+        const preview = state.thumbnailPreview;
+        preview.style.left = `${e.clientX}px`;
+        preview.style.display = "flex";
+
+        preview.querySelector("#netflix-thumbnail-time").textContent =
+            timeFormat(Math.floor(timestampMs / 1000));
+
+        if (state.progressImageRoot) {
+            const img = preview.querySelector("img");
+            const url = getFrame(state.progressImageRoot, timestampMs);
+            if (img.src !== url) img.src = url;
+        }
+    });
+
+    barreContainer.addEventListener("mouseleave", () => {
+        if (state.thumbnailPreview) {
+            state.thumbnailPreview.style.display = "none";
+        }
     });
 
     // Initial auto-hide if video is playing
